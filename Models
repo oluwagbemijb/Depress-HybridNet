@@ -1,0 +1,137 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from transformers import AutoModel
+
+class TextEncoder(nn.Module):
+    """
+    BERT -> BiLSTM pipeline. Returns v_text (512-dim by default if bilstm_hidden=256).
+    """
+    def __init__(self, bert_model_name="bert-base-uncased", max_seq_len=128, bert_dropout=0.1,
+                 bilstm_hidden=256, bilstm_layers=2, bilstm_dropout=0.3):
+        super().__init__()
+        self.bert = AutoModel.from_pretrained(bert_model_name)
+        self.bert_dropout = nn.Dropout(bert_dropout)
+        bert_hidden_size = self.bert.config.hidden_size  # 768
+        self.bilstm = nn.LSTM(
+            input_size=bert_hidden_size,
+            hidden_size=bilstm_hidden,
+            num_layers=bilstm_layers,
+            bidirectional=True,
+            batch_first=True,
+            dropout=bilstm_dropout if bilstm_layers > 1 else 0.0
+        )
+        self.output_dim = bilstm_hidden * 2  # concat of forward & backward
+
+    def forward(self, input_ids, attention_mask):
+        # BERT outputs (last_hidden_state, pooler)
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        last_hidden = outputs.last_hidden_state  # (batch, seq, hidden)
+        last_hidden = self.bert_dropout(last_hidden)
+        # pass through BiLSTM
+        out_seq, (hn, cn) = self.bilstm(last_hidden)  # out_seq: (B, seq, 2*hidden)
+        # we can take the last timestep concatenated hidden states (hn)
+        # hn shape: (num_layers*2, batch, hidden)
+        # take last layer forward and backward states
+        # index -2: forward of last layer, -1: backward of last layer
+        forward_last = hn[-2]
+        backward_last = hn[-1]
+        v_text = torch.cat([forward_last, backward_last], dim=1)  # (batch, 2*hidden)
+        return v_text
+
+
+class BehaviorMLP(nn.Module):
+    def __init__(self, in_dim=15, hidden_dims=[128, 64, 32], dropout=0.2):
+        super().__init__()
+        layers = []
+        dims = [in_dim] + hidden_dims
+        for i in range(len(dims)-1):
+            layers.append(nn.Linear(dims[i], dims[i+1]))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+        self.mlp = nn.Sequential(*layers)
+        self.output_dim = dims[-1]
+
+    def forward(self, x):
+        return self.mlp(x)
+
+
+class AdditiveAttentionFusion(nn.Module):
+    """
+    Simple additive attention to fuse text and behavior vectors.
+    We compute attention weights over the two modality vectors and produce a weighted sum.
+    """
+    def __init__(self, text_dim, behavior_dim, hidden_dim=128, dropout=0.2):
+        super().__init__()
+        self.text_ln = nn.LayerNorm(text_dim)
+        self.beh_ln = nn.LayerNorm(behavior_dim)
+
+        # project each modality to a common space
+        self.text_proj = nn.Linear(text_dim, hidden_dim)
+        self.beh_proj = nn.Linear(behavior_dim, hidden_dim)
+
+        # attention scoring layers
+        self.v = nn.Linear(hidden_dim, 1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, v_text, v_beh):
+        # normalize
+        vt = self.text_ln(v_text)    # (B, text_dim)
+        vb = self.beh_ln(v_beh)      # (B, beh_dim)
+
+        pt = torch.tanh(self.text_proj(vt))  # (B, hidden)
+        pb = torch.tanh(self.beh_proj(vb))   # (B, hidden)
+
+        # stack modalities and compute attention scores
+        stacked = torch.stack([pt, pb], dim=1)  # (B, 2, hidden)
+        scores = self.v(self.dropout(stacked)).squeeze(-1)  # (B,2)
+        weights = torch.softmax(scores, dim=1).unsqueeze(-1)  # (B,2,1)
+
+        fused = (torch.stack([v_text, v_beh], dim=1) * weights).sum(dim=1)  # (B, dim?) works only if dims equal -> need projection
+        # If dims differ, project both to same dim (we'll project to text_dim)
+        if v_text.size(1) != v_beh.size(1):
+            # map behavior to text_dim
+            beh_to_text = nn.Linear(v_beh.size(1), v_text.size(1)).to(v_beh.device)
+            v_beh_proj = beh_to_text(v_beh)
+            fused = (torch.stack([v_text, v_beh_proj], dim=1) * weights).sum(dim=1)
+        return fused, weights.squeeze(-1)  # return also weights (B,2)
+
+
+class DepressHybridNet(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        bert_name = cfg["model"]["bert_model_name"]
+        self.text_enc = TextEncoder(
+            bert_model_name=bert_name,
+            max_seq_len=cfg["model"]["max_seq_len"],
+            bert_dropout=cfg["model"].get("bert_dropout", 0.1),
+            bilstm_hidden=cfg["model"].get("bilstm_hidden", 256),
+            bilstm_layers=cfg["model"].get("bilstm_layers", 2),
+            bilstm_dropout=cfg["model"].get("bilstm_dropout", 0.3)
+        )
+        behavior_dims = cfg["model"].get("behavior_dims", 15)
+        self.beh_mlp = BehaviorMLP(in_dim=behavior_dims,
+                                   hidden_dims=cfg["model"].get("behavior_mlp", [128,64,32]),
+                                   dropout=cfg["model"].get("behavior_dropout",0.2))
+        self.attn = AdditiveAttentionFusion(
+            text_dim=self.text_enc.output_dim,
+            behavior_dim=self.beh_mlp.output_dim,
+            hidden_dim=cfg["model"].get("attention_hidden", 128),
+            dropout=cfg["model"].get("attention_dropout", 0.2)
+        )
+        # classification head
+        fused_dim = self.text_enc.output_dim  # we fuse to text dim by projection inside attention
+        self.classifier = nn.Sequential(
+            nn.Linear(fused_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 1)  # binary
+        )
+
+    def forward(self, input_ids, attention_mask, behavior_feats):
+        v_text = self.text_enc(input_ids=input_ids, attention_mask=attention_mask)  # (B, text_dim)
+        v_beh = self.beh_mlp(behavior_feats)  # (B, beh_dim)
+        v_fused, attn_weights = self.attn(v_text, v_beh)  # (B, fused_dim), (B,2)
+        logits = self.classifier(v_fused).squeeze(-1)
+        probs = torch.sigmoid(logits)
+        return logits, probs, attn_weights
