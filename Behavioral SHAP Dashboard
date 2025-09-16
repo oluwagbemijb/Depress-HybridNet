@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Behavioral SHAP (GradientExplainer) Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Charting libraries via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdn.plot.ly/plotly-2.34.0.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --muted: #9ca3af;
+      --text: #e5e7eb;
+      --accent: #60a5fa;
+      --accent-2: #34d399;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --border: #1f2937;
+      --chip: #374151;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #0b1220, #0f172a 25%, #0f172a 75%, #0b1220);
+      color: var(--text);
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(8px); z-index: 9;
+    }
+    header h1 { margin: 0; font-size: 18px; letter-spacing: 0.3px; font-weight: 600; }
+    header .meta { color: var(--muted); font-size: 12px; }
+
+    .container {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 16px;
+      padding: 16px;
+    }
+    .card {
+      background: linear-gradient(180deg, #0e1526, #0e1322);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+    }
+    .card h3 {
+      margin: 0 0 12px 0;
+      font-size: 14px; font-weight: 600; color: #dbeafe;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .section { margin-top: 16px; }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    input[type="text"], input[type="number"], select {
+      width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: #0b1020; color: var(--text); outline: none;
+    }
+    input[type="file"] {
+      width: 100%; padding: 10px; border-radius: 8px; border: 1px dashed var(--border);
+      background: #0b1020; color: var(--muted);
+    }
+    button {
+      background: linear-gradient(90deg, #2563eb, #22c55e);
+      border: none; color: white; padding: 10px 14px; border-radius: 10px; cursor: pointer;
+      font-weight: 600; letter-spacing: 0.2px;
+      box-shadow: 0 8px 18px rgba(37,99,235,0.25);
+    }
+    button.secondary {
+      background: #101828; border: 1px solid var(--border); color: var(--text); box-shadow: none;
+    }
+    button.warn { background: #f59e0b; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; }
+
+    .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip { background: var(--chip); color: #d1d5db; padding: 4px 8px; border-radius: 999px; font-size: 12px; }
+    .log {
+      background: #0b1020; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
+      height: 120px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    th { color: #bfdbfe; font-weight: 600; }
+    tr:hover td { background: #0b1020; }
+
+    .split {
+      display: grid; grid-template-columns: 1.1fr 1fr; gap: 16px;
+    }
+    .panel-title {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .panel-title .right { color: var(--muted); font-size: 12px; }
+    .preview {
+      width: 100%; height: 360px; border: 1px dashed var(--border); border-radius: 8px; display: grid; place-items: center; color: var(--muted);
+      background: repeating-linear-gradient(45deg, #0b1020, #0b1020 10px, #0c1222 10px, #0c1222 20px);
+      overflow: hidden;
+    }
+    img.preview-img {
+      max-width: 100%; max-height: 100%; object-fit: contain; display: none;
+    }
+    .kbd {
+      background: #0b1020; border: 1px solid var(--border); border-bottom-width: 3px; padding: 2px 6px; border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono"; font-size: 11px; color: #cbd5e1;
+    }
+    .footer {
+      padding: 16px 24px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; text-align: center;
+    }
+    .pill {
+      background: #0b1020; border: 1px solid var(--border); padding: 6px 8px; border-radius: 8px; color: #cbd5e1; font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Behavioral SHAP (GradientExplainer) Dashboard</h1>
+    <div class="meta">Model: DepressHybridNet • Explainer: GradientExplainer • Modality: Behavioral features</div>
+  </header>
+
+  <div class="container">
+    <!-- Sidebar: Parameters + Uploads -->
+    <aside class="card">
+      <h3>Run parameters</h3>
+      <div class="section">
+        <div class="label">Config path</div>
+        <input id="configPath" type="text" placeholder="config.yaml" value="config.yaml" />
+      </div>
+      <div class="row section">
+        <div>
+          <div class="label">Checkpoint</div>
+          <input id="checkpointPath" type="text" placeholder="runs/checkpoint.pt" />
+        </div>
+        <div>
+          <div class="label">Split file</div>
+          <input id="splitPath" type="text" placeholder="data/splits/test.csv" value="data/splits/test.csv" />
+        </div>
+      </div>
+      <div class="row section">
+        <div>
+          <div class="label">Background size</div>
+          <input id="backgroundSize" type="number" value="50" min="1" />
+        </div>
+        <div>
+          <div class="label">Max eval samples</div>
+          <input id="maxEval" type="number" value="200" min="1" />
+        </div>
+      </div>
+      <div class="section">
+        <div class="label">Output directory</div>
+        <input id="outDir" type="text" placeholder="runs/shap_grad_results" value="runs/shap_grad_results" />
+      </div>
+
+      <div class="section toolbar">
+        <button id="btnCopyCmd">Copy CLI command</button>
+        <button class="secondary" id="btnClear">Clear inputs</button>
+      </div>
+
+      <div class="section">
+        <h3>Upload results</h3>
+        <div class="label">SHAP values CSV (behavior_shap_grad_values.csv)</div>
+        <input id="csvFile" type="file" accept=".csv" />
+        <div class="label" style="margin-top:10px;">Optional images (bar/beeswarm)</div>
+        <input id="imgBar" type="file" accept="image/*" />
+        <input id="imgBee" type="file" accept="image/*" style="margin-top:8px;" />
+      </div>
+
+      <div class="section">
+        <h3>Log</h3>
+        <div id="log" class="log"></div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="card">
+      <div class="panel-title">
+        <h3>Overview</h3>
+        <div class="right">
+          <span class="pill" id="status">Waiting for CSV…</span>
+        </div>
+      </div>
+      <div class="chips">
+        <span class="chip">Mean |SHAP| ranking</span>
+        <span class="chip">Interactive bar chart</span>
+        <span class="chip">Heatmap by sample</span>
+        <span class="chip">Per-sample top contributors</span>
+      </div>
+
+      <div class="section split">
+        <div class="card">
+          <h3>Top features by mean |SHAP|</h3>
+          <div class="toolbar" style="margin-bottom:8px;">
+            <button class="secondary" id="btnExportTop">Download table CSV</button>
+            <span class="muted small">Computed from uploaded SHAP matrix</span>
+          </div>
+          <div style="max-height: 360px; overflow: auto;">
+            <table id="topTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Feature</th>
+                  <th>Mean |SHAP|</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Bar chart</h3>
+          <div class="toolbar" style="margin-bottom:8px;">
+            <button class="secondary" id="btnBarPNG">Download PNG</button>
+            <button class="secondary" id="btnBarCSV">Download data CSV</button>
+            <span class="muted small">Scroll to zoom, drag to pan</span>
+          </div>
+          <canvas id="barChart" height="300"></canvas>
+        </div>
+      </div>
+
+      <div class="section split">
+        <div class="card">
+          <h3>Heatmap of SHAP values</h3>
+          <div class="toolbar" style="margin-bottom:8px;">
+            <label class="label">Samples to show</label>
+            <input id="heatmapN" type="number" min="10" value="100" style="max-width: 120px;" />
+            <button class="secondary" id="btnHeatmap">Render</button>
+            <button class="secondary" id="btnHeatmapPNG">Download PNG</button>
+          </div>
+          <div id="heatmap" style="width:100%; height:360px;"></div>
+        </div>
+
+        <div class="card">
+          <h3>Per-sample explorer</h3>
+          <div class="toolbar" style="margin-bottom:8px; gap: 6px;">
+            <label class="label">Sample index</label>
+            <input id="sampleIndex" type="number" min="0" value="0" style="max-width: 100px;" />
+            <label class="label">Top K</label>
+            <input id="topK" type="number" min="1" value="10" style="max-width: 80px;" />
+            <button class="secondary" id="btnSample">Show</button>
+            <button class="secondary" id="btnSampleCSV">Download row CSV</button>
+          </div>
+          <div style="max-height: 340px; overflow: auto;">
+            <table id="sampleTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Feature</th>
+                  <th>SHAP</th>
+                  <th>|SHAP| rank</th>
+                  <th>Sign</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="section split">
+        <div class="card">
+          <h3>Bar/beeswarm previews</h3>
+          <div class="row">
+            <div>
+              <div class="label">Bar plot image</div>
+              <div class="preview" id="barPreview">
+                <img id="barImg" class="preview-img" alt="Bar plot preview" />
+                <div class="muted small">Upload behavior_shap_grad_bar.png</div>
+              </div>
+            </div>
+            <div>
+              <div class="label">Beeswarm image</div>
+              <div class="preview" id="beePreview">
+                <img id="beeImg" class="preview-img" alt="Beeswarm plot preview" />
+                <div class="muted small">Upload behavior_shap_grad_beeswarm.png</div>
+              </div>
+            </div>
+          </div>
+          <div class="muted small" style="margin-top:10px;">
+            Tip: Generate these via your script, then drop them here for quick visual comparison.
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Notes</h3>
+          <p class="muted small">
+            - This UI computes feature importance as mean absolute SHAP across samples, matching your Python pipeline.
+          </p>
+          <p class="muted small">
+            - Beeswarm here is image-only. If you also upload the feature matrix (not included by the script),
+            you can extend the code to render an interactive beeswarm colored by feature values.
+          </p>
+          <p class="muted small">
+            - CSV format expected: columns are behavior feature names, plus an optional leading "sample_idx" column.
+          </p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="footer">
+    Built for quick interpretation of GradientExplainer outputs. Keep what matters, question the rest.
+  </div>
+
+  <script>
+    // State
+    let shapMatrix = null;       // Array of rows (objects)
+    let featureNames = [];       // Behavior columns only
+    let stats = null;            // { feature: string, meanAbs: number }[]
+    let barChart = null;
+
+    const $ = (id) => document.getElementById(id);
+    const log = (msg) => {
+      const t = new Date().toLocaleTimeString();
+      $("log").textContent += `[${t}] ${msg}\n`;
+      $("log").scrollTop = $("log").scrollHeight;
+    };
+
+    // Build CLI command (for convenience)
+    function buildCLI() {
+      const cfg = $("configPath").value || "config.yaml";
+      const ckpt = $("checkpointPath").value || "";
+      const split = $("splitPath").value || "data/splits/test.csv";
+      const out = $("outDir").value || "runs/shap_grad_results";
+      const bg = parseInt($("backgroundSize").value || "50", 10);
+      const me = parseInt($("maxEval").value || "200", 10);
+      const parts = [
+        "python shap_behavior_grad.py",
+        `--config ${shellEscape(cfg)}`,
+        ckpt ? `--checkpoint ${shellEscape(ckpt)}` : "",
+        `--split ${shellEscape(split)}`,
+        `--out_dir ${shellEscape(out)}`,
+        `--background_size ${bg}`,
+        `--max_eval ${me}`
+      ].filter(Boolean);
+      return parts.join(" \\\n  ");
+    }
+
+    function shellEscape(s) {
+      if (/[\s'"\\]/.test(s)) {
+        return `'${s.replace(/'/g, `'\\''`)}'`;
+      }
+      return s;
+    }
+
+    $("btnCopyCmd").addEventListener("click", async () => {
+      const cmd = buildCLI();
+      await navigator.clipboard.writeText(cmd);
+      log("CLI command copied to clipboard.");
+    });
+
+    $("btnClear").addEventListener("click", () => {
+      ["csvFile", "imgBar", "imgBee"].forEach(id => { $(id).value = ""; });
+      clearVisuals();
+      log("Inputs cleared.");
+    });
+
+    // File uploads
+    $("csvFile").addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      loadCSV(file);
+    });
+
+    $("imgBar").addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      previewImage(file, "barImg", "barPreview");
+    });
+
+    $("imgBee").addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      previewImage(file, "beeImg", "beePreview");
+    });
+
+    function previewImage(file, imgId, containerId) {
+      const img = $(imgId);
+      const reader = new FileReader();
+      reader.onload = () => {
+        img.src = reader.result;
+        img.style.display = "block";
+        $(containerId).querySelector(".muted")?.remove();
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function clearVisuals() {
+      shapMatrix = null;
+      featureNames = [];
+      stats = null;
+      $("topTable").querySelector("tbody").innerHTML = "";
+      $("sampleTable").querySelector("tbody").innerHTML = "";
+      $("status").textContent = "Waiting for CSV…";
+      if (barChart) {
+        barChart.destroy();
+        barChart = null;
+      }
+      Plotly.purge("heatmap");
+    }
+
+    // CSV loading and processing
+    function loadCSV(file) {
+      log(`Reading CSV: ${file.name}`);
+      Papa.parse(file, {
+        header: true,
+        dynamicTyping: true,
+        skipEmptyLines: true,
+        complete: (res) => {
+          if (res.errors && res.errors.length) {
+            log(`CSV parse errors: ${res.errors.length}`);
+          }
+          shapMatrix = res.data;
+          if (!shapMatrix.length) {
+            log("CSV is empty.");
+            return;
+          }
+          // Detect feature columns (exclude 'sample_idx' if present)
+          const cols = res.meta.fields || Object.keys(shapMatrix[0]);
+          featureNames = cols.filter(c => c !== "sample_idx");
+          if (!featureNames.length) {
+            log("No feature columns found.");
+            return;
+          }
+          $("status").textContent = `Loaded ${shapMatrix.length} samples • ${featureNames.length} features`;
+          computeStats();
+          renderTopTable();
+          renderBarChart();
+          log("CSV loaded and visuals rendered.");
+        }
+      });
+    }
+
+    function computeStats() {
+      // mean |SHAP| per feature
+      const n = shapMatrix.length;
+      stats = featureNames.map(f => {
+        let sum = 0;
+        for (let i = 0; i < n; i++) {
+          const v = shapMatrix[i][f];
+          const val = typeof v === "number" ? v : parseFloat(v);
+          sum += Math.abs(val || 0);
+        }
+        return { feature: f, meanAbs: sum / n };
+      }).sort((a, b) => b.meanAbs - a.meanAbs);
+    }
+
+    function renderTopTable() {
+      const tbody = $("topTable").querySelector("tbody");
+      tbody.innerHTML = "";
+      stats.forEach((row, idx) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${idx + 1}</td>
+          <td>${escapeHtml(row.feature)}</td>
+          <td>${row.meanAbs.toExponential(4)}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function renderBarChart() {
+      const ctx = $("barChart").getContext("2d");
+      const labels = stats.map(s => s.feature);
+      const dataVals = stats.map(s => s.meanAbs);
+      if (barChart) barChart.destroy();
+      barChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{
+            label: "Mean |SHAP|",
+            data: dataVals,
+            backgroundColor: "rgba(96,165,250,0.6)",
+            borderColor: "rgba(96,165,250,1)",
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { color: "#cbd5e1", autoSkip: true, maxRotation: 45, minRotation: 0 } },
+            y: { ticks: { color: "#cbd5e1" }, title: { display: true, text: "Mean |SHAP|" } }
+          },
+          plugins: {
+            legend: { labels: { color: "#e5e7eb" } },
+            zoom: {
+              zoom: {
+                wheel: { enabled: true },
+                pinch: { enabled: true },
+                mode: "x",
+              },
+              pan: { enabled: true, mode: "x" }
+            },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => ` ${ctx.dataset.label}: ${Number(ctx.parsed.y).toExponential(4)}`
+              }
+            }
+          }
+        }
+      });
+
+      $("btnBarPNG").onclick = () => {
+        const a = document.createElement("a");
+        a.href = barChart.toBase64Image("image/png", 1);
+        a.download = "behavior_shap_grad_bar_interactive.png";
+        a.click();
+      };
+
+      $("btnBarCSV").onclick = () => {
+        const out = [["feature", "mean_abs_shap"], ...stats.map(s => [s.feature, s.meanAbs])];
+        downloadCSV(out, "behavior_shap_grad_importance.csv");
+      };
+    }
+
+    $("btnHeatmap").addEventListener("click", () => renderHeatmap());
+    $("btnHeatmapPNG").addEventListener("click", async () => {
+      try {
+        await Plotly.downloadImage("heatmap", { format: "png", filename: "behavior_shap_grad_heatmap" });
+      } catch (e) { log("Plotly image download failed."); }
+    });
+
+    function renderHeatmap() {
+      if (!shapMatrix) return;
+      const nShow = Math.min(parseInt($("heatmapN").value || "100", 10), shapMatrix.length);
+      const Z = [];
+      for (let i = 0; i < nShow; i++) {
+        Z.push(featureNames.map(f => shapMatrix[i][f]));
+      }
+      const data = [{
+        z: Z,
+        x: featureNames,
+        y: Array.from({ length: nShow }, (_, i) => i),
+        type: "heatmap",
+        colorscale: [
+          [0, "#312e81"], [0.5, "#0ea5e9"], [0.5, "#111827"], [0.5, "#f59e0b"], [1, "#7f1d1d"]
+        ],
+        zmid: 0,
+        colorbar: { title: "SHAP" }
+      }];
+      const layout = {
+        margin: { l: 45, r: 15, t: 10, b: 80 },
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
+        xaxis: { tickfont: { color: "#cbd5e1" } },
+        yaxis: { tickfont: { color: "#cbd5e1" } },
+        height: 360
+      };
+      Plotly.react("heatmap", data, layout, { responsive: true });
+    }
+
+    $("btnSample").addEventListener("click", () => renderSample());
+    $("btnSampleCSV").addEventListener("click", () => {
+      if (!shapMatrix) return;
+      const idx = parseInt($("sampleIndex").value || "0", 10);
+      const row = shapMatrix[idx];
+      if (!row) return;
+      const out = [["feature", "shap_value"]];
+      featureNames.forEach(f => out.push([f, row[f]]));
+      downloadCSV(out, `sample_${idx}_shap_values.csv`);
+    });
+
+    function renderSample() {
+      if (!shapMatrix) return;
+      const idx = parseInt($("sampleIndex").value || "0", 10);
+      const topK = Math.max(1, parseInt($("topK").value || "10", 10));
+      const row = shapMatrix[idx];
+      if (!row) {
+        log(`Sample index ${idx} out of range.`);
+        return;
+      }
+      const arr = featureNames.map(f => ({ feature: f, v: row[f] }));
+      arr.sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+      const view = arr.slice(0, topK);
+
+      const tbody = $("sampleTable").querySelector("tbody");
+      tbody.innerHTML = "";
+      view.forEach((r, i) => {
+        const tr = document.createElement("tr");
+        const sign = r.v > 0 ? "positive" : (r.v < 0 ? "negative" : "zero");
+        const signColor = r.v > 0 ? "#22c55e" : (r.v < 0 ? "#ef4444" : "#9ca3af");
+        tr.innerHTML = `
+          <td>${i + 1}</td>
+          <td>${escapeHtml(r.feature)}</td>
+          <td><span class="kbd" style="border-color:${signColor}; color:${signColor}">${Number(r.v).toExponential(4)}</span></td>
+          <td>${i + 1}</td>
+          <td><span class="chip" style="background:${hexWithAlpha(signColor,0.15)}; color:${signColor}">${sign}</span></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Utilities
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, m => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[m]));
+    }
+    function hexWithAlpha(hex, alpha) {
+      // Accepts #rrggbb
+      const c = hex.replace("#","");
+      const r = parseInt(c.substring(0,2),16);
+      const g = parseInt(c.substring(2,4),16);
+      const b = parseInt(c.substring(4,6),16);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+    function downloadCSV(rows, filename) {
+      const csv = rows.map(r => r.map(v => (typeof v === "string" && v.includes(",")) ? `"${v.replace(/"/g,'""')}"` : v).join(",")).join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    // Initial hints
+    log("1) Run your Python script to generate behavior_shap_grad_values.csv and images.");
+    log("2) Upload the CSV here to compute interactive visualizations.");
+    log("3) Optionally upload bar/beeswarm PNGs for quick preview.");
+  </script>
+</body>
+</html>
