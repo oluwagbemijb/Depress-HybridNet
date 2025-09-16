@@ -1,0 +1,24 @@
+# Basic config for Depress-HybridNet
+seed: 42
+device: auto         # "cpu" or "cuda" or "auto"
+model:
+  bert_model_name: "bert-base-uncased"
+  max_seq_len: 128
+  bert_dropout: 0.1
+  bilstm_hidden: 256
+  bilstm_layers: 2
+  bilstm_dropout: 0.3
+  behavior_dims: 15    # number of raw behavioral features expected
+  behavior_mlp: [128,64,32]
+  behavior_dropout: 0.2
+  attention_hidden: 128
+train:
+  batch_size: 32
+  epochs: 30
+  lr: 2e-5
+  weight_decay: 1e-5
+  early_stop_patience: 5
+paths:
+  dataset_csv: "data/dataset.csv"   # must contain: user_id (opt), text, label, plus behavioral features (cols)
+  out_dir: "runs"
+  checkpoint: "runs/checkpoint.pt"
