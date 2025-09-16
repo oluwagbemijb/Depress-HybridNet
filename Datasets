@@ -1,0 +1,59 @@
+import pandas as pd
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer
+import numpy as np
+
+class DepressionDataset(Dataset):
+    """
+    Expects CSV with at least: text, label
+    Optionally: additional behavioral feature columns (all numeric)
+    """
+    def __init__(self, csv_path, tokenizer_name="bert-base-uncased", max_length=128, behavior_cols=None):
+        df = pd.read_csv(csv_path)
+        # basic checks
+        if "text" not in df.columns or "label" not in df.columns:
+            raise ValueError("CSV must contain 'text' and 'label' columns.")
+        self.df = df.reset_index(drop=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
+        self.max_length = max_length
+
+        if behavior_cols is None:
+            # automatically infer behavior columns (numeric, excluding text & label & user_id)
+            excluded = {"text", "label", "user_id"}
+            self.behavior_cols = [c for c in df.columns if c not in excluded and df[c].dtype in (np.float64, np.float32, np.int64, np.int32)]
+        else:
+            self.behavior_cols = behavior_cols
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        text = str(row["text"])
+        label = int(row["label"])
+        tok = self.tokenizer(text, truncation=True, padding="max_length", max_length=self.max_length, return_tensors="pt")
+        input_ids = tok["input_ids"].squeeze(0)
+        attention_mask = tok["attention_mask"].squeeze(0)
+
+        if len(self.behavior_cols) > 0:
+            beh = row[self.behavior_cols].fillna(0).values.astype(float).astype("float32")
+            beh = torch.tensor(beh)
+        else:
+            # if no behavior cols provided, default zero vector
+            beh = torch.zeros(15, dtype=torch.float32)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "behavior": beh,
+            "label": torch.tensor(label, dtype=torch.float32)
+        }
+
+def collate_fn(batch):
+    # batch is list of dicts. We can stack tensors.
+    input_ids = torch.stack([b["input_ids"] for b in batch])
+    attention_mask = torch.stack([b["attention_mask"] for b in batch])
+    behavior = torch.stack([b["behavior"] for b in batch])
+    labels = torch.stack([b["label"] for b in batch])
+    return {"input_ids": input_ids, "attention_mask": attention_mask, "behavior": behavior, "labels": labels}
