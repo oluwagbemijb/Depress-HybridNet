@@ -1,0 +1,105 @@
+import os
+import time
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
+from models import DepressHybridNet
+from dataset import DepressionDataset, collate_fn
+from utils import load_config, set_seed, get_device, compute_metrics
+import numpy as np
+
+def train():
+    cfg = load_config("config.yaml")
+    set_seed(cfg.get("seed", 42))
+    device = get_device(cfg)
+
+    # Read dataset & create splits (train/val/test)
+    csv_path = cfg["paths"]["dataset_csv"]
+    df = __import__("pandas").read_csv(csv_path)
+    strat_col = "label"
+    train_df, temp_df = train_test_split(df, test_size=0.30, stratify=df[strat_col], random_state=cfg.get("seed",42))
+    val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df[strat_col], random_state=cfg.get("seed",42))
+    os.makedirs("data/splits", exist_ok=True)
+    train_df.to_csv("data/splits/train.csv", index=False)
+    val_df.to_csv("data/splits/val.csv", index=False)
+    test_df.to_csv("data/splits/test.csv", index=False)
+
+    # Construct datasets
+    tokenizer_name = cfg["model"]["bert_model_name"]
+    max_len = cfg["model"]["max_seq_len"]
+    behavior_cols = None  # auto-detect
+    train_ds = DepressionDataset("data/splits/train.csv", tokenizer_name, max_len, behavior_cols)
+    val_ds = DepressionDataset("data/splits/val.csv", tokenizer_name, max_len, behavior_cols)
+
+    train_loader = DataLoader(train_ds, batch_size=cfg["train"]["batch_size"], shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=cfg["train"]["batch_size"], shuffle=False, collate_fn=collate_fn)
+
+    model = DepressHybridNet(cfg)
+    model.to(device)
+
+    loss_fn = nn.BCEWithLogitsLoss()
+    optim = torch.optim.AdamW(model.parameters(), lr=cfg["train"]["lr"], weight_decay=cfg["train"]["weight_decay"])
+
+    best_val_f1 = -1.0
+    patience = cfg["train"].get("early_stop_patience", 5)
+    counter = 0
+
+    for epoch in range(1, cfg["train"]["epochs"] + 1):
+        model.train()
+        losses = []
+        for batch in train_loader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            behavior = batch["behavior"].to(device)
+            labels = batch["labels"].to(device)
+
+            optim.zero_grad()
+            logits, probs, _ = model(input_ids, attention_mask, behavior)
+            loss = loss_fn(logits, labels)
+            loss.backward()
+            optim.step()
+            losses.append(loss.item())
+        avg_loss = float(np.mean(losses))
+
+        # validation
+        model.eval()
+        ys, yps = [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                input_ids = batch["input_ids"].to(device)
+                attention_mask = batch["attention_mask"].to(device)
+                behavior = batch["behavior"].to(device)
+                labels = batch["labels"].to(device)
+
+                logits, probs, _ = model(input_ids, attention_mask, behavior)
+                ys.append(labels.cpu().numpy())
+                yps.append(probs.cpu().numpy())
+        ys = np.concatenate(ys)
+        yps = np.concatenate(yps)
+        metrics = compute_metrics(ys, yps)
+        val_f1 = metrics["f1"]
+
+        print(f"[Epoch {epoch}] train_loss={avg_loss:.4f} val_f1={val_f1:.4f} val_auc={metrics['auc']:.4f}")
+
+        # checkpointing
+        out_dir = cfg["paths"].get("out_dir", "runs")
+        os.makedirs(out_dir, exist_ok=True)
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            torch.save({
+                "model_state": model.state_dict(),
+                "cfg": cfg
+            }, os.path.join(out_dir, "checkpoint.pt"))
+            print("  -> New best model saved.")
+            counter = 0
+        else:
+            counter += 1
+            if counter >= patience:
+                print("Early stopping triggered.")
+                break
+
+    print("Training complete. Best val F1:", best_val_f1)
+
+if __name__ == "__main__":
+    train()
